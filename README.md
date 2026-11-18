@@ -1,7 +1,7 @@
 # UniXNU on Xiaomi Pad 6S Pro (sheng) — Flash Research Log
 
 小米 Pad 6S Pro 12.4（代号 `sheng`）刷入 UniXNU / iPadOS 27 的完整实验记录：
-引导门槛的定位过程、已证实的结论、失败的死路、以及当前可用的启动配方。
+从立项调研、两条构建线的成败，到刷机之夜的引导门槛定位与启动配方。
 记录时间：2026-11-15 至 2026-11-18（持续更新）。
 
 > 种子（installation seed / chip id）属于设备私密材料，不在本仓库记录任何数值或哈希。
@@ -18,13 +18,46 @@
   - first-install userdata 镜像（14,732,319,540 B，刷入后约 232 GiB 逻辑卷）
   - installation seed（私密保存，不入库）
 
-## 2. 刷写模型
+## 2. 历程：三天是怎么走到刷机之夜的
+
+### 2026-11-15 — 立项与调研
+- 确认设备与目标：sheng、256 GB、bootloader 已解锁；只做 iPadOS 27，不碰其他版本。
+- 调研结论先行：该移植无 Apple ID / iCloud / AirDrop（即使蓝牙/USB/Wi-Fi 在上游已实现），FairPlay 加密的 IPA 不能运行——预期管理到位后再动手。
+- 确立刷写模型（见第 3 节），平板数据完成备份。
+- 找到 Murderd1 的设备树：他本人在 2026-11-11 至 11-13 有多次自托管 CI 成功记录（#12–#25），是当时唯一有真机验证迹象的 sheng 方案。
+
+### 2026-11-15 至 11-16 — 本地 Mac 构建线
+- 在本地 Hackintosh 上沿上游配对路线构建，逐个修掉：`sched_clutch` 问题、12 符号基线链接、seal 失败。
+- 最终卡在 prelink 布局：内核布局放不下，本地线止步于此（后被云端线证明是同一堵墙）。
+
+### 2026-11-16 至 11-17 上午 — 上游配对云端线（#1–#39）
+- GitHub Actions 上连续 39 次构建迭代，问题逐个收敛，最终 #39（2026-11-17 09:16）死在 prelink 的 **192 KB "Native code would collide with collection data"** 墙：336 个未解析引用全部指向内核本体，不是缺符号，是布局死结。
+- 结论：上游配对路线在当前组合下走不通，止损。
+
+### 2026-11-17 10:40 — 策略转向：照搬已验证的整套
+- 定下纪律：**照搬就逐项照搬——代码、配置、运行环境（runner 架构）全部与原作者的成功配置一致，不做任何"等价替换"。** 此前本地线与云端线的多次失败，本质都是在某个环节换了未经验证的组合。
+- #40 曾尝试用直链分发种子文件，因链接 403 失败——种子分发方式就此改为不经第三方直链（这也是后来所有工件改走 GitHub Releases 的原因）。
+
+### 2026-11-17 11:37 — #41 成功
+- 用作者的树 + 作者的工作流（只把自检出钉到他的仓库与提交）在 macos-26-intel 上构建，**#41 成功**：images、first-install userdata、构建日志、种子一整套产物齐全。
+- 11:46 另一条 ARM 分支线 #42 也成功，但它生成了**独立的种子谱系**——两条线的种子与镜像严禁混用，#42 就此隔离封存，唯一主线是 #41。
+
+### 2026-11-17 下午 — Windows 暂存与逐项校验
+- 全部工件在 Windows 侧按 `package.manifest.json` 逐项核对大小与 SHA-256（boot.img / payload.img / kernel.macho / userdata）。
+- 修掉刷机脚本的一个真 bug：fastboot 把 `product: sheng` 写到 stderr，被 PowerShell 的 Stop 策略误判为致命错误——改为分离 stdout/stderr 后预检才通过。
+- 种子完成四处备份（Windows 两处、VM 一处、原始包一处），入仓文件加只读锁。
+- 教训入账：早期构建的 userdata-root-27 镜像一度被凭印象断言"能与任何 boot 配对"，读过作者打包脚本后纠正——他的 first-install 镜像多了一步恢复 IPSW 的 RSA3072 签名 root 哈希表并校验，配对关系未经验证的镜像一律退役。**镜像配对必须读脚本确认，不能凭印象。**
+
+### 2026-11-17 晚 — 刷机之夜
+- userdata 三度刷入成功（每次 19/19 OKAY）；全球版基线对照、备用槽路径、BootLog 读取器攻坚与 dtbo 决定性实验，全部记录在下文第 4–6 节。
+
+## 3. 刷写模型
 
 - 唯一需要刷入的分区是 `userdata`（`fastboot flash userdata`，约 400 秒），iPadOS 的系统与数据都在这一个镜像里。
 - `boot.img` 在作者的设计里通过 `fastboot boot` 临时加载；在**本机**这条路走不通（见结论 1），实际使用的是作者脚本里记录的第二条路：刷入备用槽 `boot_b` + `set_active b`，a 槽保留原厂 Android 作为退路。
 - 回到 Android：Mi Flash `flash_all`（**永远不要 `flash_all_lock`**，跨区锁回有变砖风险）。
 
-## 3. 已证实的结论（全部有对照实验支撑）
+## 4. 已证实的结论（全部有对照实验支撑）
 
 ### 结论 1：本机 ABL 只接受 header v4 的 boot 镜像，`fastboot boot` 路径关闭
 - 任何 v0 镜像走 `fastboot boot`：第一次返回"空 OKAY"（设备实际没有复位），第二次报 `Failed to load/authenticate boot image: Load Error`。
@@ -52,7 +85,7 @@
 - 但 `CONFIG_TYPEC_QCOM_PMIC=m`，其模块真名 `qcom_pmic_tcpm.ko` 不在原版 reader ramdisk 里（只有一个 nvmem 模块）→ Type-C 角色无人上报 → 双角色 dwc3 不激活 UDC → 总线全程无声。
 - 修复版 ramdisk（v2）已补入 `tcpm.ko` + `qcom_pmic_tcpm.ko` + `ucsi_ccg.ko`（vermagic 全部匹配），待实测。
 
-## 4. 实验矩阵（boot_b / vendor_boot_b / dtbo_b）
+## 5. 实验矩阵（boot_b / vendor_boot_b / dtbo_b）
 
 | # | boot | vendor_boot 的 DTB | dtbo | 结果 |
 |---|---|---|---|---|
@@ -67,7 +100,7 @@
 
 规律：DTB 是原厂的 → 活；DTB 是主线的且 dtbo 还在 → 死；dtbo 擦掉 → 主线 DTB 也活。
 
-## 5. BootLog 读取器（reader）
+## 6. BootLog 读取器（reader）
 
 - 原理：UniXNU 的 UEFI/内核把 BootLog 写在 userdata 的**最后 32 MiB**。作者树自带 `package/linux-log`：一个主线 Linux 镜像，启动后把该窗口读进 RAM 并通过 USB CDC ACM 串口提供 shell，`scripts/read-sheng-log.py` 抓取后用 `rebootbl` 回到 fastboot。只读块设备，不挂载。
 - 镜像来源：ianchb/sm8550-mainline 7.3.4 的 `boot_sheng_singleboot.img`（v0）+ 同版 deb 的内核/DTB。
@@ -77,7 +110,7 @@
   - 主线 DTB 中 SMMU 节点名为 `iommu@15000000`（下游叫 `apps-smmu`），按节点名比对会误判"缺失"。
 - Windows 侧读取脚本为原脚本的平台层移植（pyserial 按 VID 0x1D6B / PID 0x0104 找串口），协议与解码逐字节一致。
 
-## 6. 当前状态与下一步
+## 7. 当前状态与下一步
 
 - ✅ 引导配方已打通：**v4 打包 + vendor_boot（原厂容器 + 目标 DTB）+ `fastboot erase dtbo_b` + 备用槽启动**。
 - ⏳ reader v2（补 Type-C 模块）待刷机验证：出现串口 → 读取 BootLog → 定位 UniXNU 本体的死亡点（现有证据只定位到"UEFI/DarwinBoot 载荷交接段、XNU 显示代码之前"：构建日志显示内核带蓝/品红进度条补丁，而实测一次都没出现过）。
@@ -87,7 +120,7 @@
   2. 他验证过的启动是否都基于已有安装（原始 Data 种子）？`init_data=true` 冷首装是否走过、是否有坑？
   3. UEFI/DarwinBoot 是否使用 ABL 递来的 DTB？
 
-## 7. 工件索引（aipxu7xs/UniXNU-sheng 的 Releases）
+## 8. 工件索引（aipxu7xs/UniXNU-sheng 的 Releases）
 
 | Release | 内容 |
 |---|---|
@@ -103,7 +136,7 @@
 - vendor_boot_v3.img：sha256 `7664803aacc9cdda9500fee3ba2e4ae0601dfac483dfb9a87078462faba62933`
 - reader_initramfs_v2.cpio.gz：sha256 `fb068ddb77d8cf46b3bd93682bea0581ff98db002c1a4d8c4b746b57396095c9`
 
-## 8. 安全红线
+## 9. 安全红线
 
 - 只用 `flash_all`，**绝不 `flash_all_lock`**。
 - 刷国行原厂包前核对 anti_version（本机 anti=1）。
