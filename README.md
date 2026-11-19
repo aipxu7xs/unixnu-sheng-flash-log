@@ -64,7 +64,7 @@
 - 官方线立项：删旧 fork → 按官方主线 `c8f92b2` 重新 fork → 开 Actions → 产物保留期 1 天改 14 天 → 芯片种子从 #41 的 `payload.img` 里找回（ADT 的 `unique-chip-id` 属性，是软件身份种子）并由本人重新设为仓库 secret。
 
 ### 2026-11-19 凌晨至上午 — 官方构建连环坑（进行中）
-官方 `package.yml` 在上游仓库至今 0 次运行记录——这条工作流从没在 GitHub 托管 runner 上完整跑过，我们是第一个踩全程的人。坑按出现顺序：
+官方 `package.yml` 在上游仓库至今 0 次运行记录——这条工作流从没在上游自己的仓库里被完整跑过，其他人都在各自的 fork 与改造版里运行。坑按出现顺序：
 
 1. **tools 步骤 ipsw 装不上**：Homebrew 当前校验器拒绝 `blacktop/tap/ipsw` 的 cask 定义（`zap` stanza 报错），与架构无关。改法：brew 行去掉它，改装官方 release 的 universal 二进制（v3.1.749）。
 2. **同一步内 PATH 不生效**：`$GITHUB_PATH` 只影响后续步骤，同一步的自检看不到刚装的二进制——ipsw、cargo 各栽一次。改法：同一步内再 `export PATH` 一次。
@@ -89,16 +89,39 @@
 | #15 | 失败 45m38s | 桥接已过；WiFi 源码未拉取 |
 | #16 | 失败 10m06s | fetch：FreeBSD 提交不匹配 |
 | #17 | 失败 12m19s | fetch：sparse-checkout 未启用 |
-| #18 | 2026-11-19 08:58 触发 | 在跑（截至本记录） |
+| #18 | 失败 ~64m | fetch 已过；桥接 cargo 1800 s 超时（后改 7200 s，与上游新值一致） |
+| #19 | 失败 1h24m | 设备补丁 `sheng-startup-failure-log` 过期（对 92 补丁后的真实树形 rebase 修复，本地全系列 97 补丁验证通过） |
+| #20 | 失败 1h19m | archive-19：`build-sheng-source-drivers.py` 在组装树里找 profile.toml（官方 tree 组装不含 profiles/；移植上游修法：从核心检出解析） |
+| #21 | 失败 1h09m | archive-19：`GeniSpi.h` 缺失——官方 board.toml 的 iPadOS 27 配置只有 prelink 覆盖、没有 components 覆盖，QcomGeniSpi 从不被选中（官方 27 构建在源码层面即断裂）；核心分叉加回退解析：树里没有就从核心检出取 |
+| #22 | 取消 ~44m | package 步骤被取消，原因不明，无产物 |
+| #23 | 失败 64m | #21 的修复提交经网页粘贴后缩进损坏（IndentationError）——教训入账：**提交后必须拉回原文编译验证**，不能只验本地意图文本 |
+| #24 | 失败 1h03m | archive-19：键盘 MCU 固件 `nanosic/MCU_Upgrade.bin` 缺失——`scripts/extract-files.py` 是文档记载的手工预备步，官方工作流从不运行；DnuyaSha 与 s1eke 各自独立加了同一步。已加全量提取+校验步骤 |
+| #25 | 失败 79m35s | archive-20：fileset RELEASE reference（LTO）链接 exit 2（脚本自动移除 67 个不可用强制导出后重链仍失败；具体符号只在未上传的 runner 侧日志里）。同日 s1eke 在 fe530d0f 之后的提交越过此关并两跑成功（8e1bd1b1 / 0aa63c9b），其 diff 移植分析中 |
 
 - 附带事件：#16 失败后 GitHub 一度停用了 fork 的全部工作流，#17 触发前在页面上手动重新启用，此后未再复发。
 - 纪律延续：每次修复同时落到 main 与 pkg-arm64 两个分支，只派 Intel 一条线；产物（installation seed）每轮由 always() 步骤备份，跨轮不混用。
+- 统一修复集（#22 起）：除 #21 的 GeniSpi 修复外，一并移植 s1eke 的四个已验证补丁（-Werror 的 macOS-only 守卫、内核链接弱符号、板级对象 -Os、大诊断缓冲改运行时分配；逐个与合并应用均在干净官方树上验证通过）。其 prelink 回归策略文件绑定他自己的 kernelcache 哈希，不可移植，未采用。
+
+### 2026-11-19 下午至晚 — DnuyaSha 备份线与刷机之夜二番
+- **社区构建方式调研**：fork 扫描显示绝大多数人同样在失败；DnuyaSha 的运行 `44371470592`（02:36–04:58）成功，其工作流是 126 步的自维护变体。他的整套备份（images 174,888,927 B / seed / logs）经登录浏览器下载并逐项验哈希通过；其仓库 porting 记录核实：2026-11-16 已有"正常启动系统并触摸"的真机记录，另有主屏照片级证据。
+- **双线决策（18:17 修订）**：两套的差异只在 boot.img（种子在构建时焊入 boot.img，userdata 是同一份通用文件）——先刷 DnuyaSha 的整套进系统；自家官方构建线**无期限续跑**直到成功，成功后其 boot.img 归档，供日后换回自家种子（换回需重刷 userdata，数据不跨种子携带）。
+- **刷机**：19:35 首次 flash 被 Windows 侧工具中断（结果未知、无日志）；随后探活发现 USB bulk 通道挂死——设备枚举正常、`getvar` 却 15 秒超时。**物理重进 bootloader（同口同线，未换任何线材）即恢复**（`getvar product` 0.039 秒返回）：挂死在平板侧 fastboot 的 USB 协议状态，中断的传输是诱因。
+- **本机首次真正执行 UniXNU 启动（20:04）**：`fastboot boot` DnuyaSha 的 boot.img 成功执行（推翻旧结论 1 对现行格式镜像的适用性，见第 3 节注）——绿带+蓝带出现，随即死于 `SourceStorage: UFS start failed (root step 3: root window preparation failed) @SourceStorage.cpp:308`。
+- 完整重刷（输出落盘，19/19 OKAY，409.8 s）后第二次 boot：UniXNU 菜单出现并自动选默认项，绿→蓝→品红三带齐全，仍死于同一行——**"没刷全"假设否证**。
+- **取证链（当晚逐步排除）**：
+  1. 疑菜单第二项 "Install and boot"：读源码否证——`data-reset` 只被已挂载 Data 卷的看门狗策略消费，不进存储路径，两项到达 root step 3 的输入完全相同；
+  2. 疑刷错文件（该刷 first-install 变体而非 root 变体）：定位发现 `first-install.json` 就在已刷文件同目录，其记录的哈希与已刷文件**全等**；zip 内 `userdata-first-install.img` 流式哈希三方一致——已刷的正是 first-install 正主（当年暂存时改了名）；
+  3. 清单解析：SHNGROOT version 2、四条目（OS / SystemOS / OS.vroot / SystemOS.vroot）齐全；
+  4. 四窗口离线审计：OS、SystemOS 内容哈希与签名策略钉死值 MATCH；两张 .vroot 一度因长度少算 544 字节误报 MISMATCH，按条目 size 重算后与自身 digest MATCH——**这 544 字节就是破案线索**。
+- **真凶（源码双向坐实，见结论 7）**：内核 `NativeUfs.cpp` 的 `policyTableLba` 要求 .vroot 对象 `size` **恰等于** tableBytes（块数×32；OS 应为 75,104,256）。而 #41 年代的 `build-first-install-userdata.py` 中 `restore_manifest` 把对象写成 **544 字节签名信封 + 表**（75,104,800）。官方构建器 `userdata.py` 的对象参数是 `NAME=FILE[:OFFSET]`，正确用法 `:544` 跳过信封只嵌裸表——该脚本漏了偏移。DnuyaSha 的 ShengUfs pin（57f031c）同一行检查逐字相同；他与 s1eke 的镜像由现行构建器生成，天生合规。
+- **重打包 v1**：在副本上剥去两张表的信封（内容左移、槽尾清零、偏移不变），清单 size/digest 改为裸表值；动手前先验裸表 SHA-256 与信封头 +88 处签名 `table_hash` 逐字节一致（两张表均 MATCH——正是内核要验的摘要）。新文件 SHA-256 `15abb4a84cd77c917989eb78cbb054e3874b10d3d7bcec211c437557c933ab26`（原件未动）。刷入 19/19 OKAY（403 s）后 boot，报错变为 **`root manifest rejected`**——尺寸关已过，前进一步。
+- **清单自校验**：构建源码写明清单块 `[4064:4096]` 是其前 4064 字节的 SHA-256；v1 改了条目却没重算自校验，故被拒。**v2 = v1 + 重算清单自校验**（先在原件上验证该自校验存在再动手），制作中。
 
 ## 3. 刷写模型
 
 - 唯一需要刷入的分区是 `userdata`（`fastboot flash userdata`，约 400 秒），iPadOS 的系统与数据都在这一个镜像里。
 - **官方流程（现行主线）**：`fastboot flash userdata`（官方构建的 userdata 镜像）→ `fastboot reboot bootloader` → `fastboot boot boot.img` 临时启动；成败按官方检查点阶梯判定：UniXNU 启动菜单 → 绿带（交棒内核前）→ 蓝带（内核入口）→ 品红带（开 MMU 前）。
-- `boot.img` 在作者的设计里通过 `fastboot boot` 临时加载；在**本机**这条路走不通（见结论 1），实际使用的是作者脚本里记录的第二条路：刷入备用槽 `boot_b` + `set_active b`，a 槽保留原厂 Android 作为退路。注：该异常是在朋友树旧快照镜像上测得的；官方镜像的布局（`uefi-chunks` ramdisk 压缩、`SHENG_BOOT_GUARD`）与试过的任何镜像都不同，官方线构建成功后将按官方流程原样复测 `fastboot boot`，不在复测前下结论。
+- `boot.img` 在作者的设计里通过 `fastboot boot` 临时加载。结论 1 的"本机走不通"只适用于朋友树旧快照的 v0 镜像：**2026-11-19 已实测 DnuyaSha 的现行格式 boot.img 在本机 `fastboot boot` 正常执行**（菜单与三色带齐全），官方流程就此在本机成立，备用槽刷 boot 的路线退役。
 - 回到 Android：Mi Flash `flash_all`（**永远不要 `flash_all_lock`**，跨区锁回有变砖风险）。
 
 ## 4. 已证实的结论（全部有对照实验支撑）
@@ -129,10 +152,16 @@
 - 但 `CONFIG_TYPEC_QCOM_PMIC=m`，其模块真名 `qcom_pmic_tcpm.ko` 不在原版 reader ramdisk 里（只有一个 nvmem 模块）→ Type-C 角色无人上报 → 双角色 dwc3 不激活 UDC → 总线全程无声。
 - 修复版 ramdisk（v2）已补入 `tcpm.ko` + `qcom_pmic_tcpm.ko` + `ucsi_ccg.ko`（vermagic 全部匹配），待实测。
 
+### 结论 7：.vroot 对象格式代差——内核只认裸表，#41 首装镜像多了 544 字节信封
+- 现象：镜像、窗口、哈希表内容全部验过无误，内核仍在 root step 3 的窗口准备阶段（Prepare）拒绝启动，两次刷入结果逐字节一致地死在同一行。
+- 机理：现行内核（官方 ShengUfs 9d527ae 与 DnuyaSha 的 57f031c 逐字相同）`policyTableLba` 要求镜像清单里 `<window>.vroot` 对象的 `size` **恰等于** tableBytes（窗口块数×32）。#41 年代的首装构建脚本把对象写成「544 字节签名信封（VROOT01 头 160 B + RSA-3072 签名 384 B）+ 哈希表」，比规定长 544 字节，尺寸不等即拒。
+- 表本身是好的：剥去信封后的裸表 SHA-256 与信封头 +88 处签名钉死的 `table_hash` 逐字节一致——内容从未损坏，纯粹是封装格式代差。官方构建器用 `:544` 偏移参数跳过信封，Murderd1 的脚本漏了这一步。
+- 连带教训：清单块自身带自校验（`[4064:4096]` = 前 4064 字节的 SHA-256）；任何原地修改清单条目（size/digest）后必须重算，否则报错从"窗口准备失败"变为"清单被拒"——后者反而证明尺寸关已过。
+
 ## 5. 实验矩阵（boot_b / vendor_boot_b / dtbo_b）
 
 | # | boot | vendor_boot 的 DTB | dtbo | 结果 |
-|---|---|---|---|
+|---|---|---|---|---|
 | 1 | 原厂 v4 | 原厂 8 DTB | 原厂 | 81 s，内核活（死于挂载 UniXNU userdata，预期内） |
 | 2 | v4 打包（gzip 内核） | 主线 DTB | 原厂 | 6 s 死 |
 | 3 | v4 打包（raw 内核） | 主线 DTB | 原厂 | 6 s 死 |
@@ -163,9 +192,10 @@
   2. 他验证过的启动是否都基于已有安装（原始 Data 种子）？`init_data=true` 冷首装是否走过、是否有坑？
   3. UEFI/DarwinBoot 是否使用 ABL 递来的 DTB？
 - ⏳ reader v3.3（原厂容器 + 只换 reader ramdisk 的混合配方）设计已定稿，**降级为备用**：仅当官方线启动失败且需要一份新鲜 BootLog 时才构建（构建还差 Windows 侧提供国行原厂 `vendor_boot.img`）。
-- ⏳ **官方构建 #18 在跑**（2026-11-19 上午）：成功后整套产物同源下载校验 → 按官方流程刷机（flash userdata → fastboot boot → 检查点阶梯判定），a 槽 Android 全程不动。
+- ⏳ **刷机线（DnuyaSha 整套）**：boot.img 已在本机执行并越过菜单/三色带；userdata 已定位到根卷校验的两道格式关（.vroot 对象尺寸、清单自校验），重打包 v2 制作中，完成后重刷 + boot 复验。a 槽 Android 全程不动。
+- ⏳ **官方构建线**：#25 失败于 archive-20；s1eke 的越关提交 diff 移植分析中，完成后派 #26。成功后整套产物同源下载校验，并按现行构建器流程产出合规的首装 userdata（禁用 Murderd1 脚本的原样用法）。
 - ⏳ KernelSU root 去留待定（建议保留：它是目前唯一可用的取证读取通道；恢复只需重刷原厂 `init_boot_a` + `boot_a`）。
-- ⏳ 刷机成功后移除 Hackintosh 的 macOS（只删 APFS 容器，保留 EFI 与 Windows 启动项）。
+- ✅ Hackintosh 的 macOS 已于 2026-11-19 由本人删除（只删 APFS 容器；Windows 与 EFI 完好，当晚刷机即在该 Windows 上进行）。
 
 ## 8. 工件索引（aipxu7xs/UniXNU-sheng 的 Releases）
 
