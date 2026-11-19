@@ -2,7 +2,7 @@
 
 小米 Pad 6S Pro 12.4（代号 `sheng`）刷入 UniXNU / iPadOS 27 的完整实验记录：
 从立项调研、两条构建线的成败，到刷机之夜的引导门槛定位与启动配方。
-记录时间：2026-11-15 至 2026-11-18（持续更新）。
+记录时间：2026-11-15 至 2026-11-19（持续更新）。
 
 > 种子（installation seed / chip id）属于设备私密材料，不在本仓库记录任何数值或哈希。
 
@@ -13,12 +13,13 @@
 - 设备：Xiaomi Pad 6S Pro 12.4（`sheng`，Snapdragon 8 Gen 2 / SM8550，256 GB），bootloader 已解锁，anti=1。
 - 目标系统：UniXNU，iPadOS 27.0.1 (24A446) 配置。
 - 设备树：Murderd1 的 `codex/self-hosted-mac` 分支 @ `52d7600`；核心：`Murderd1/UniXNU` @ `d830d23`；uefi-sheng @ `66421cb`。
+- 2026-11-18 起第二条构建线：**官方线**——删旧 fork、按官方 `UniXNU/UniXNU-sheng` @ `c8f92b2` 重新 fork；全树对比确认朋友树只是官方的旧快照（7 个 submodule 有 5 个 pin 不同），此后以官方文档与官方代码为准（见第 2 节 11-18 / 11-19 条目）。
 - 云端构建 #41（GitHub Actions，macos-26-intel，`init_data=true` 全新种子）构建成功，产物：
   - `boot.img`（185,712,640 B，header v0，内含 UEFI/DarwinBoot 桩 + payload）
   - first-install userdata 镜像（14,732,319,540 B，刷入后约 232 GiB 逻辑卷）
   - installation seed（私密保存，不入库）
 
-## 2. 历程：三天是怎么走到刷机之夜的
+## 2. 历程
 
 ### 2026-11-15 — 立项与调研
 - 确认设备与目标：sheng、256 GB、bootloader 已解锁；只做 iPadOS 27，不碰其他版本。
@@ -51,10 +52,53 @@
 ### 2026-11-17 晚 — 刷机之夜
 - userdata 三度刷入成功（每次 19/19 OKAY）；全球版基线对照、备用槽路径、BootLog 读取器攻坚与 dtbo 决定性实验，全部记录在下文第 4–6 节。
 
+### 2026-11-18 — BootLog 终局、路线纠正与官方线立项
+- **不向作者提问**：其仓库 Issue 对非协作者关闭，评论渠道也排除——最终决定消息搁置、不发出，三个问题改为内部自解（BootLog / reader 路线）。
+- reader v3.1 / v3.2 两次实测：都是约 3 秒离开 fastboot、300 秒内无任何 USB 设备出现（无串口、无其他设备）。
+- **KernelSU root 打通**（patch `init_boot_a`；sheng 是 init_boot 机型，root 补的是 init_boot 不是 boot），获得双尾读取通道：
+  - `vendor_boot_b` 的日志环约 99.6% 非零高熵、零个有效标记 → reader 从未留下记录；
+  - userdata 最后 32 MiB **全零** → 2026-11-17 21:12 那次启动的 BootLog 已被国行恢复后的首次开机格式化覆盖，**不可恢复，此问关闭**。教训入账：**BootLog 必须赶在任何 Android 格式化碰 userdata 之前读。**
+- 现状落点：a 槽国行原厂 OS3.0.306.0 + KernelSU root 供日常使用与取证；b 槽保留 reader 组合，`dtbo_b` 处于擦除状态。
+- **路线纠正（当晚自检）**：11-17 晚那次启动尝试之后，诊断逐渐变成主线、产品步骤原地停滞——承认走偏。当晚起回归官方文档（unixnu.com 的 building / guide/boot / requirements）为第一依据。
+- 澄清一个误判：作者本人也是 Windows + GitHub 云端构建，并非 Mac 直连刷机；本机的 Hackintosh 与刷机无关，已决定不再修、计划移除 macOS（顺序：先刷机、后移除；Windows 与 OpenCore 共用一块 EFI，只删 APFS 容器，绝不能动 EFI）。
+- 官方线立项：删旧 fork → 按官方主线 `c8f92b2` 重新 fork → 开 Actions → 产物保留期 1 天改 14 天 → 芯片种子从 #41 的 `payload.img` 里找回（ADT 的 `unique-chip-id` 属性，是软件身份种子）并由本人重新设为仓库 secret。
+
+### 2026-11-19 凌晨至上午 — 官方构建连环坑（进行中）
+官方 `package.yml` 在上游仓库至今 0 次运行记录——这条工作流从没在 GitHub 托管 runner 上完整跑过，我们是第一个踩全程的人。坑按出现顺序：
+
+1. **tools 步骤 ipsw 装不上**：Homebrew 当前校验器拒绝 `blacktop/tap/ipsw` 的 cask 定义（`zap` stanza 报错），与架构无关。改法：brew 行去掉它，改装官方 release 的 universal 二进制（v3.1.749）。
+2. **同一步内 PATH 不生效**：`$GITHUB_PATH` 只影响后续步骤，同一步的自检看不到刚装的二进制——ipsw、cargo 各栽一次。改法：同一步内再 `export PATH` 一次。
+3. **mesa 补丁 #13 被 macOS 的 git 拒绝**：`git apply` 对 `turnip-frame-diagnostics.patch` 只报 `error: dev/null: No such file or directory`（Linux 上同一补丁干净通过）。专门的诊断工作流三方对照：原版失败 / 补 `index` 行仍失败（该理论否证）/ GNU `patch -p1` 成功。改法：在核心分叉里给 `git apply` 加 `patch -p1` 兜底，正向应用与身份校验的反向应用都覆盖。
+4. **cargo 三连坑**：① Homebrew 只装裸 `rustup`、从不跑 `rustup-init`，工具链装了却没有 cargo shim；② 桥接脚本调用 `cargo +1.98.0 …`，只有 rustup 代理能处理 `+toolchain`；③ runner 上的 `/usr/local/bin/rustup` 是个 155 字节的 shim 脚本，重 exec 时把代理的 argv[0] 弄丢，软链、硬链代理全废。四轮 `cargo-diag` 诊断工作流定位后，改法：桥接改调 `rustup run 1.98.0 cargo`。**#15 首次越过桥接阶段**（此前所有运行都死在 mesa 或桥接之前）。
+5. **WiFi 源码没人拉**：`drivers/Ath12kWifi/deps/` 被 gitignore，官方全流程没有任何一步调用拉取脚本，`prepare-supplicant.py` 一上来 `--check` 就失败（本地复现一致）。改法：package 步骤前新增一步显式拉取三份源码（Linux 内核 / FreeBSD / wpa_supplicant）。
+6. **FreeBSD 锁定提交对不上**：锁文件钉死一个旧提交，但 `releng/15.1` 是移动分支，拉到的永远是分支尖端。改法：拉取前先按锁定提交号预置（按 SHA fetch 已验证可行）。Linux 那份用固定 tag，无此问题。
+7. **sparse-checkout 没启用**：预置的裸仓库没开稀疏检出，后续 `git sparse-checkout add` 直接 `fatal`。改法：预置块里补一行 `git sparse-checkout init --cone`（本地已复现 + 验证）。
+
+运行总账（官方线，Intel 为主线；arm64 多次因 GitHub 托管 runner 容量在排队约 15 分钟后被取消，已暂停派单）：
+
+| 运行 | 结果 | 死点 |
+|---|---|---|
+| #1 | 排队取消 | arm64 runner 容量 |
+| #2 | 失败 5m36s | tools：ipsw cask |
+| #4 | 失败 11m41s | tools：同一步 PATH（ipsw） |
+| #5 / #6 / #7 | 失败 | package：mesa 补丁 #13 |
+| #8 | 失败 40m45s | mesa 已过；桥接缺 cargo |
+| #10 | 失败 10m48s | tools：同一步 PATH（cargo） |
+| #12 | 失败 25m37s | 桥接 `+toolchain` 需 rustup 代理 |
+| #14 | 失败 28m03s | 桥接：rustup shim 吞 argv[0] |
+| #15 | 失败 45m38s | 桥接已过；WiFi 源码未拉取 |
+| #16 | 失败 10m06s | fetch：FreeBSD 提交不匹配 |
+| #17 | 失败 12m19s | fetch：sparse-checkout 未启用 |
+| #18 | 2026-11-19 08:58 触发 | 在跑（截至本记录） |
+
+- 附带事件：#16 失败后 GitHub 一度停用了 fork 的全部工作流，#17 触发前在页面上手动重新启用，此后未再复发。
+- 纪律延续：每次修复同时落到 main 与 pkg-arm64 两个分支，只派 Intel 一条线；产物（installation seed）每轮由 always() 步骤备份，跨轮不混用。
+
 ## 3. 刷写模型
 
 - 唯一需要刷入的分区是 `userdata`（`fastboot flash userdata`，约 400 秒），iPadOS 的系统与数据都在这一个镜像里。
-- `boot.img` 在作者的设计里通过 `fastboot boot` 临时加载；在**本机**这条路走不通（见结论 1），实际使用的是作者脚本里记录的第二条路：刷入备用槽 `boot_b` + `set_active b`，a 槽保留原厂 Android 作为退路。
+- **官方流程（现行主线）**：`fastboot flash userdata`（官方构建的 userdata 镜像）→ `fastboot reboot bootloader` → `fastboot boot boot.img` 临时启动；成败按官方检查点阶梯判定：UniXNU 启动菜单 → 绿带（交棒内核前）→ 蓝带（内核入口）→ 品红带（开 MMU 前）。
+- `boot.img` 在作者的设计里通过 `fastboot boot` 临时加载；在**本机**这条路走不通（见结论 1），实际使用的是作者脚本里记录的第二条路：刷入备用槽 `boot_b` + `set_active b`，a 槽保留原厂 Android 作为退路。注：该异常是在朋友树旧快照镜像上测得的；官方镜像的布局（`uefi-chunks` ramdisk 压缩、`SHENG_BOOT_GUARD`）与试过的任何镜像都不同，官方线构建成功后将按官方流程原样复测 `fastboot boot`，不在复测前下结论。
 - 回到 Android：Mi Flash `flash_all`（**永远不要 `flash_all_lock`**，跨区锁回有变砖风险）。
 
 ## 4. 已证实的结论（全部有对照实验支撑）
@@ -88,7 +132,7 @@
 ## 5. 实验矩阵（boot_b / vendor_boot_b / dtbo_b）
 
 | # | boot | vendor_boot 的 DTB | dtbo | 结果 |
-|---|---|---|---|---|
+|---|---|---|---|
 | 1 | 原厂 v4 | 原厂 8 DTB | 原厂 | 81 s，内核活（死于挂载 UniXNU userdata，预期内） |
 | 2 | v4 打包（gzip 内核） | 主线 DTB | 原厂 | 6 s 死 |
 | 3 | v4 打包（raw 内核） | 主线 DTB | 原厂 | 6 s 死 |
@@ -112,13 +156,16 @@
 
 ## 7. 当前状态与下一步
 
-- ✅ 引导配方已打通：**v4 打包 + vendor_boot（原厂容器 + 目标 DTB）+ `fastboot erase dtbo_b` + 备用槽启动**。
-- ⏳ reader v2（补 Type-C 模块）待刷机验证：出现串口 → 读取 BootLog → 定位 UniXNU 本体的死亡点（现有证据只定位到"UEFI/DarwinBoot 载荷交接段、XNU 显示代码之前"：构建日志显示内核带蓝/品红进度条补丁，而实测一次都没出现过）。
-- ⏳ UniXNU 本体的 v4 重打包（内核桩 + payload 原样，换 v4 头）待 BootLog 结论后执行。
-- ⏳ 已向作者提出三个问题（其仓库关闭了 Issue，渠道待定）：
+- ✅ 引导配方已打通：**v4 打包 + vendor_boot（原厂容器 + 目标 DTB）+ `fastboot erase dtbo_b` + 备用槽启动**（这是 reader 线的配方；UniXNU 本体改走官方流程，见下）。
+- ✅ BootLog 之问已关闭：21:12 那次的日志被国行恢复的首次开机格式化覆盖，不可恢复；今后任何尝试若失败，先读 userdata 尾部、再谈恢复。
+- ✅ 向作者提问一事已关闭：决定不发出，草稿留档未寄（仓库 Issue 关闭，本人最终拍板自己解决）。原三个问题备查：
   1. 他那台 sheng 上 `fastboot boot` 是否可用？固件/ABL 版本？
   2. 他验证过的启动是否都基于已有安装（原始 Data 种子）？`init_data=true` 冷首装是否走过、是否有坑？
   3. UEFI/DarwinBoot 是否使用 ABL 递来的 DTB？
+- ⏳ reader v3.3（原厂容器 + 只换 reader ramdisk 的混合配方）设计已定稿，**降级为备用**：仅当官方线启动失败且需要一份新鲜 BootLog 时才构建（构建还差 Windows 侧提供国行原厂 `vendor_boot.img`）。
+- ⏳ **官方构建 #18 在跑**（2026-11-19 上午）：成功后整套产物同源下载校验 → 按官方流程刷机（flash userdata → fastboot boot → 检查点阶梯判定），a 槽 Android 全程不动。
+- ⏳ KernelSU root 去留待定（建议保留：它是目前唯一可用的取证读取通道；恢复只需重刷原厂 `init_boot_a` + `boot_a`）。
+- ⏳ 刷机成功后移除 Hackintosh 的 macOS（只删 APFS 容器，保留 EFI 与 Windows 启动项）。
 
 ## 8. 工件索引（aipxu7xs/UniXNU-sheng 的 Releases）
 
